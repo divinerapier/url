@@ -1,6 +1,11 @@
-use crate::{escape, unescape, Encoding, Error, Result};
+use std::{
+    fmt::{Display, Write},
+    ops::Index,
+};
 
-#[derive(Default, Debug, PartialEq, Eq)]
+use crate::{escape, should_escape, unescape, Encoding, Error, Result};
+
+#[derive(Default, Debug, PartialEq, Eq, Clone)]
 pub struct URL {
     scheme: String,
     opaque: String,
@@ -14,7 +19,7 @@ pub struct URL {
     raw_fragment: String,
 }
 
-#[derive(Default, Debug, PartialEq, Eq)]
+#[derive(Default, Debug, PartialEq, Eq, Clone)]
 pub struct UserInfo {
     username: Option<String>,
     password: Option<String>,
@@ -36,6 +41,24 @@ impl UserInfo {
             password: Some(password),
             password_set: true,
         }
+    }
+}
+
+impl Display for UserInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut u = match self.username {
+            Some(ref username) => escape(username, Encoding::UserPassword),
+            None => escape("", Encoding::UserPassword),
+        };
+        if self.password_set {
+            u = u
+                + ":"
+                + &match self.password {
+                    Some(ref password) => escape(password, Encoding::UserPassword),
+                    None => escape("", Encoding::UserPassword),
+                };
+        }
+        write!(f, "{}", u)
     }
 }
 
@@ -102,6 +125,11 @@ impl URL {
 
     pub fn parse_request_uri(rawurl: &str) -> Result<URL> {
         Self::inner_parse(rawurl, true)
+    }
+
+    pub fn parse_reference(&self, refer: &str) -> Result<URL> {
+        let refurl = Self::parse(refer)?;
+        self.resolve_reference(&refurl)
     }
 
     fn inner_parse(rawurl: &str, via_request: bool) -> Result<URL> {
@@ -207,6 +235,183 @@ impl URL {
         self.fragment = frag;
         Ok(())
     }
+
+    pub fn escaped_path(&self) -> String {
+        if !self.raw_path.is_empty() && valid_encoded(&self.raw_path, Encoding::Path) {
+            if let Ok(p) = unescape(&self.raw_path, Encoding::Path) {
+                if p.eq(&self.path) {
+                    return self.raw_path.clone();
+                }
+            }
+        }
+
+        if self.path.eq("*") {
+            return "*".to_string();
+        }
+
+        escape(&self.path, Encoding::Path)
+    }
+
+    pub fn escaped_fragment(&self) -> String {
+        if !self.raw_fragment.is_empty() && valid_encoded(&self.raw_fragment, Encoding::Fragment) {
+            if let Ok(f) = unescape(&self.raw_fragment, Encoding::Fragment) {
+                if f.eq(&self.fragment) {
+                    return self.raw_fragment.clone();
+                }
+            }
+        }
+        escape(&self.fragment, Encoding::Fragment)
+    }
+
+    pub fn resolve_reference(&self, refer: &URL) -> Result<URL> {
+        let mut url = refer.clone();
+        if refer.scheme.is_empty() {
+            url.scheme = self.scheme.clone();
+        }
+        if !refer.scheme.is_empty() || !refer.host.is_empty() || refer.user.is_some() {
+            let resolved_path = resolve_path(&refer.escaped_path(), "");
+            url.set_path(&resolved_path)?;
+            return Ok(url);
+        }
+        if !refer.opaque.is_empty() {
+            url.user = None;
+            url.host = "".to_string();
+            url.path = "".to_string();
+            return Ok(url);
+        }
+        if refer.path.is_empty() && refer.raw_query.is_empty() {
+            url.raw_query = self.raw_query.clone();
+            if refer.fragment.is_empty() {
+                url.fragment = self.fragment.clone();
+                url.raw_fragment = self.raw_fragment.clone();
+            }
+        }
+
+        url.host = self.host.clone();
+        url.user = self.user.clone();
+        url.set_path(&resolve_path(&self.escaped_path(), &refer.escaped_path()))?;
+        Ok(url)
+    }
+}
+
+impl Display for URL {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut buf = String::with_capacity(32);
+        if !self.scheme.is_empty() {
+            buf.push_str(&self.scheme);
+            buf.push(':');
+        }
+        if !self.opaque.is_empty() {
+            buf.push_str(&self.opaque);
+        } else {
+            if !self.scheme.is_empty() || !self.host.is_empty() || self.user.is_some() {
+                if !self.host.is_empty() || !self.path.is_empty() || self.user.is_some() {
+                    buf.push_str("//");
+                }
+                if let Some(ref ui) = self.user {
+                    buf.push_str(&ui.to_string());
+                }
+                if !self.host.is_empty() {
+                    buf.push_str(&escape(&self.host, Encoding::Host));
+                }
+            }
+            let path = self.escaped_path();
+            let path_bytes = path.as_bytes();
+            if !path_bytes.is_empty() && path_bytes[0] != b'/' && !self.host.is_empty() {
+                buf.push('/')
+            }
+            if buf.is_empty() {
+                if let Some(i) = path.find(':') {
+                    if (&path[..i]).find('/').is_none() {
+                        buf.push_str("./");
+                    }
+                }
+            }
+            buf.push_str(&path);
+        }
+
+        if self.force_query || !self.raw_query.is_empty() {
+            buf.push('?');
+            buf.push_str(&self.raw_query);
+        }
+        if !self.fragment.is_empty() {
+            buf.push('#');
+            buf.push_str(&self.escaped_fragment());
+        }
+
+        write!(f, "{}", buf)
+    }
+}
+
+fn resolve_path(base: &str, r: &str) -> String {
+    let full = if r.is_empty() {
+        base.to_string()
+    } else if !r.starts_with('/') {
+        let i = match base.rfind('/') {
+            Some(i) => i + 1,
+            None => 0,
+        };
+        println!("i: {}. len: {}", i, base.len());
+        (&base[..i]).to_string() + r
+    } else {
+        r.to_string()
+    };
+
+    if full.is_empty() {
+        return full;
+    }
+
+    let mut last: &str = "";
+    let mut elem: &str;
+    let mut i: i32 = 0;
+    let mut dst = "".to_string();
+
+    let mut first = true;
+    let mut remaining: &str = &full;
+
+    while i >= 0 {
+        match remaining.find('/') {
+            Some(index) => {
+                elem = &remaining[..index];
+                remaining = &remaining[index + 1..];
+                i = index as i32;
+            }
+            None => {
+                last = remaining;
+                elem = remaining;
+                remaining = "";
+                i = -1;
+            }
+        }
+        if elem.eq(".") {
+            first = false;
+            continue;
+        }
+
+        if elem.eq("..") {
+            let str = dst.clone();
+            let index = str.rfind('/');
+            dst.clear();
+            if let Some(index) = index {
+                dst.push_str(&str[..index]);
+            } else {
+                first = true;
+            }
+        } else {
+            if !first {
+                dst.push('/');
+            }
+            dst.push_str(elem);
+            first = false;
+        }
+    }
+
+    if last.eq(".") || last.eq("..") {
+        dst.push('/')
+    }
+
+    dst
+    // ["/", dst.trim_start_matches('/')].concat()
 }
 
 fn parse_authority(authority: &str) -> Result<(Option<UserInfo>, String)> {
@@ -262,6 +467,23 @@ fn valid_optional_port(port: &str) -> bool {
         let c = *c as char;
         if c < '0' || c > '9' {
             return false;
+        }
+    }
+    true
+}
+
+fn valid_encoded(rawpath: &str, mode: Encoding) -> bool {
+    let s = rawpath.as_bytes();
+    for i in 0..s.len() {
+        match s[i] as char {
+            '!' | '$' | '&' | '\'' | '(' | ')' | '*' | '+' | ',' | ';' | '=' | ':' | '@' => {}
+            '[' | ']' => {}
+            '%' => {}
+            _ => {
+                if should_escape(s[i], mode) {
+                    return false;
+                }
+            }
         }
     }
     true
@@ -1039,5 +1261,251 @@ mod test {
             print!("{}, ", *c as u32);
         }
         println!();
+    }
+
+    #[test]
+    fn test_resolve_path() {
+        let cases = vec![
+            ("a/b", ".", "/a/"),
+            ("a/b", "c", "/a/c"),
+            ("a/b", "..", "/"),
+            ("a/", "..", "/"),
+            ("a/", "../..", "/"),
+            ("a/b/c", "..", "/a/"),
+            ("a/b/c", "../d", "/a/d"),
+            ("a/b/c", ".././d", "/a/d"),
+            ("a/b", "./..", "/"),
+            ("a/./b", ".", "/a/"),
+            ("a/../", ".", "/"),
+            ("a/.././b", "c", "/c"),
+        ];
+        for (base, refer, expected) in cases {
+            let got = resolve_path(base, refer);
+            assert_eq!(got, expected);
+        }
+    }
+
+    #[test]
+    fn test_resolve_reference() {
+        let cases = vec![
+            // Absolute URL references
+            ("http://foo.com?a=b", "https://bar.com/", "https://bar.com/"),
+            (
+                "http://foo.com/",
+                "https://bar.com/?a=b",
+                "https://bar.com/?a=b",
+            ),
+            ("http://foo.com/", "https://bar.com/?", "https://bar.com/?"),
+            (
+                "http://foo.com/bar",
+                "mailto:foo@example.com",
+                "mailto:foo@example.com",
+            ),
+            // Path-absolute references
+            ("http://foo.com/bar", "/baz", "http://foo.com/baz"),
+            ("http://foo.com/bar?a=b#f", "/baz", "http://foo.com/baz"),
+            ("http://foo.com/bar?a=b", "/baz?", "http://foo.com/baz?"),
+            (
+                "http://foo.com/bar?a=b",
+                "/baz?c=d",
+                "http://foo.com/baz?c=d",
+            ),
+            // Multiple slashes
+            (
+                "http://foo.com/bar",
+                "http://foo.com//baz",
+                "http://foo.com//baz",
+            ),
+            (
+                "http://foo.com/bar",
+                "http://foo.com///baz/quux",
+                "http://foo.com///baz/quux",
+            ),
+            // Scheme-relative
+            (
+                "https://foo.com/bar?a=b",
+                "//bar.com/quux",
+                "https://bar.com/quux",
+            ),
+            // Path-relative references:
+
+            // ... current directory
+            ("http://foo.com", ".", "http://foo.com/"),
+            ("http://foo.com/bar", ".", "http://foo.com/"),
+            ("http://foo.com/bar/", ".", "http://foo.com/bar/"),
+            // ... going down
+            ("http://foo.com", "bar", "http://foo.com/bar"),
+            ("http://foo.com/", "bar", "http://foo.com/bar"),
+            ("http://foo.com/bar/baz", "quux", "http://foo.com/bar/quux"),
+            // ... going up
+            ("http://foo.com/bar/baz", "../quux", "http://foo.com/quux"),
+            (
+                "http://foo.com/bar/baz",
+                "../../../../../quux",
+                "http://foo.com/quux",
+            ),
+            ("http://foo.com/bar", "..", "http://foo.com/"),
+            ("http://foo.com/bar/baz", "./..", "http://foo.com/"),
+            // ".." in the middle (issue 3560)
+            (
+                "http://foo.com/bar/baz",
+                "quux/dotdot/../tail",
+                "http://foo.com/bar/quux/tail",
+            ),
+            (
+                "http://foo.com/bar/baz",
+                "quux/./dotdot/../tail",
+                "http://foo.com/bar/quux/tail",
+            ),
+            (
+                "http://foo.com/bar/baz",
+                "quux/./dotdot/.././tail",
+                "http://foo.com/bar/quux/tail",
+            ),
+            (
+                "http://foo.com/bar/baz",
+                "quux/./dotdot/./../tail",
+                "http://foo.com/bar/quux/tail",
+            ),
+            (
+                "http://foo.com/bar/baz",
+                "quux/./dotdot/dotdot/././../../tail",
+                "http://foo.com/bar/quux/tail",
+            ),
+            (
+                "http://foo.com/bar/baz",
+                "quux/./dotdot/dotdot/./.././../tail",
+                "http://foo.com/bar/quux/tail",
+            ),
+            (
+                "http://foo.com/bar/baz",
+                "quux/./dotdot/dotdot/dotdot/./../../.././././tail",
+                "http://foo.com/bar/quux/tail",
+            ),
+            (
+                "http://foo.com/bar/baz",
+                "quux/./dotdot/../dotdot/../dot/./tail/..",
+                "http://foo.com/bar/quux/dot/",
+            ),
+            // Remove any dot-segments prior to forming the target URI.
+            // http://tools.ietf.org/html/rfc3986#section-5.2.4
+            (
+                "http://foo.com/dot/./dotdot/../foo/bar",
+                "../baz",
+                "http://foo.com/dot/baz",
+            ),
+            // Triple dot isn't special
+            ("http://foo.com/bar", "...", "http://foo.com/..."),
+            // Fragment
+            ("http://foo.com/bar", ".#frag", "http://foo.com/#frag"),
+            (
+                "http://example.org/",
+                "#!$&%27()*+,;=",
+                "http://example.org/#!$&%27()*+,;=",
+            ),
+            // Paths with escaping (issue 16947).
+            ("http://foo.com/foo%2fbar/", "../baz", "http://foo.com/baz"),
+            (
+                "http://foo.com/1/2%2f/3%2f4/5",
+                "../../a/b/c",
+                "http://foo.com/1/a/b/c",
+            ),
+            (
+                "http://foo.com/1/2/3",
+                "./a%2f../../b/..%2fc",
+                "http://foo.com/1/2/b/..%2fc",
+            ),
+            (
+                "http://foo.com/1/2%2f/3%2f4/5",
+                "./a%2f../b/../c",
+                "http://foo.com/1/2%2f/3%2f4/a%2f../c",
+            ),
+            ("http://foo.com/foo%20bar/", "../baz", "http://foo.com/baz"),
+            (
+                "http://foo.com/foo",
+                "../bar%2fbaz",
+                "http://foo.com/bar%2fbaz",
+            ),
+            (
+                "http://foo.com/foo%2dbar/",
+                "./baz-quux",
+                "http://foo.com/foo%2dbar/baz-quux",
+            ),
+            // RFC 3986: Normal Examples
+            // http://tools.ietf.org/html/rfc3986#section-5.4.1
+            ("http://a/b/c/d;p?q", "g:h", "g:h"),
+            ("http://a/b/c/d;p?q", "g", "http://a/b/c/g"),
+            ("http://a/b/c/d;p?q", "./g", "http://a/b/c/g"),
+            ("http://a/b/c/d;p?q", "g/", "http://a/b/c/g/"),
+            ("http://a/b/c/d;p?q", "/g", "http://a/g"),
+            ("http://a/b/c/d;p?q", "//g", "http://g"),
+            ("http://a/b/c/d;p?q", "?y", "http://a/b/c/d;p?y"),
+            ("http://a/b/c/d;p?q", "g?y", "http://a/b/c/g?y"),
+            ("http://a/b/c/d;p?q", "#s", "http://a/b/c/d;p?q#s"),
+            ("http://a/b/c/d;p?q", "g#s", "http://a/b/c/g#s"),
+            ("http://a/b/c/d;p?q", "g?y#s", "http://a/b/c/g?y#s"),
+            ("http://a/b/c/d;p?q", ";x", "http://a/b/c/;x"),
+            ("http://a/b/c/d;p?q", "g;x", "http://a/b/c/g;x"),
+            ("http://a/b/c/d;p?q", "g;x?y#s", "http://a/b/c/g;x?y#s"),
+            ("http://a/b/c/d;p?q", "", "http://a/b/c/d;p?q"),
+            ("http://a/b/c/d;p?q", ".", "http://a/b/c/"),
+            ("http://a/b/c/d;p?q", "./", "http://a/b/c/"),
+            ("http://a/b/c/d;p?q", "..", "http://a/b/"),
+            ("http://a/b/c/d;p?q", "../", "http://a/b/"),
+            ("http://a/b/c/d;p?q", "../g", "http://a/b/g"),
+            ("http://a/b/c/d;p?q", "../..", "http://a/"),
+            ("http://a/b/c/d;p?q", "../../", "http://a/"),
+            ("http://a/b/c/d;p?q", "../../g", "http://a/g"),
+            // RFC 3986: Abnormal Examples
+            // http://tools.ietf.org/html/rfc3986#section-5.4.2
+            ("http://a/b/c/d;p?q", "../../../g", "http://a/g"),
+            ("http://a/b/c/d;p?q", "../../../../g", "http://a/g"),
+            ("http://a/b/c/d;p?q", "/./g", "http://a/g"),
+            ("http://a/b/c/d;p?q", "/../g", "http://a/g"),
+            ("http://a/b/c/d;p?q", "g.", "http://a/b/c/g."),
+            ("http://a/b/c/d;p?q", ".g", "http://a/b/c/.g"),
+            ("http://a/b/c/d;p?q", "g..", "http://a/b/c/g.."),
+            ("http://a/b/c/d;p?q", "..g", "http://a/b/c/..g"),
+            ("http://a/b/c/d;p?q", "./../g", "http://a/b/g"),
+            ("http://a/b/c/d;p?q", "./g/.", "http://a/b/c/g/"),
+            ("http://a/b/c/d;p?q", "g/./h", "http://a/b/c/g/h"),
+            ("http://a/b/c/d;p?q", "g/../h", "http://a/b/c/h"),
+            ("http://a/b/c/d;p?q", "g;x=1/./y", "http://a/b/c/g;x=1/y"),
+            ("http://a/b/c/d;p?q", "g;x=1/../y", "http://a/b/c/y"),
+            ("http://a/b/c/d;p?q", "g?y/./x", "http://a/b/c/g?y/./x"),
+            ("http://a/b/c/d;p?q", "g?y/../x", "http://a/b/c/g?y/../x"),
+            ("http://a/b/c/d;p?q", "g#s/./x", "http://a/b/c/g#s/./x"),
+            ("http://a/b/c/d;p?q", "g#s/../x", "http://a/b/c/g#s/../x"),
+            // Extras.
+            ("https://a/b/c/d;p?q", "//g?q", "https://g?q"),
+            ("https://a/b/c/d;p?q", "//g#s", "https://g#s"),
+            (
+                "https://a/b/c/d;p?q",
+                "//g/d/e/f?y#s",
+                "https://g/d/e/f?y#s",
+            ),
+            ("https://a/b/c/d;p#s", "?y", "https://a/b/c/d;p?y"),
+            ("https://a/b/c/d;p?q#s", "?y", "https://a/b/c/d;p?y"),
+        ];
+
+        let opaque = URL {
+            scheme: "scheme".to_string(),
+            opaque: "opaque".to_string(),
+            ..Default::default()
+        };
+        for (base, refer, expected) in cases {
+            let b = URL::parse(base).expect(&format!("parse {}", base));
+            let r = URL::parse(refer).expect(&format!("parse {}", refer));
+            let url = b.resolve_reference(&r).unwrap();
+            let got = url.to_string();
+            assert_eq!(got, expected);
+            let url = b.parse_reference(refer).unwrap();
+            let got = url.to_string();
+            assert_eq!(got, expected);
+            let url = b.resolve_reference(&opaque).unwrap();
+            assert_eq!(url, opaque);
+            let url = b.parse_reference("scheme:opaque").unwrap();
+            assert_ne!(url, b);
+        }
     }
 }
