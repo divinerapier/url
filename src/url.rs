@@ -1,7 +1,4 @@
-use std::{
-    fmt::{Display, Write},
-    ops::Index,
-};
+use std::{borrow::Cow, collections::HashMap, fmt::Display};
 
 use crate::{escape, should_escape, unescape, Encoding, Error, Result};
 
@@ -192,16 +189,13 @@ impl URL {
                 }
             }
             if rest.starts_with("//")
-                && ((!via_request && !rest.starts_with("///")) || (url.scheme.ne("")))
+                && ((!via_request && !rest.starts_with("///")) || (!url.scheme.is_empty()))
             {
                 let (authority, rest_tmp) = split(&rest[2..], '/', false);
                 rest = rest_tmp;
                 let rh = parse_authority(authority)?;
                 url.user = rh.0;
-                url.host = rh.1;
-                println!("authority: {}", authority);
-                println!("user: {:?}", url.user);
-                println!("host: {}", url.host);
+                url.host = rh.1.into();
             }
             rest
         } else {
@@ -219,7 +213,7 @@ impl URL {
         } else {
             self.raw_path = p.to_string();
         }
-        self.path = path;
+        self.path = path.into();
 
         Ok(())
     }
@@ -232,7 +226,7 @@ impl URL {
         } else {
             self.raw_fragment = f.to_string();
         }
-        self.fragment = frag;
+        self.fragment = frag.into();
         Ok(())
     }
 
@@ -364,7 +358,7 @@ fn resolve_path(base: &str, r: &str) -> String {
     let mut last: &str = "";
     let mut elem: &str;
     let mut i: i32 = 0;
-    let mut dst = "".to_string();
+    let mut dst = "/".to_string();
 
     let mut first = true;
     let mut remaining: &str = &full;
@@ -410,11 +404,14 @@ fn resolve_path(base: &str, r: &str) -> String {
         dst.push('/')
     }
 
-    dst
-    // ["/", dst.trim_start_matches('/')].concat()
+    if dst.starts_with("//") {
+        (&dst[1..]).to_string()
+    } else {
+        dst
+    }
 }
 
-fn parse_authority(authority: &str) -> Result<(Option<UserInfo>, String)> {
+fn parse_authority(authority: &str) -> Result<(Option<UserInfo>, Cow<str>)> {
     let i = authority.rfind('@');
     let host = match i {
         None => parse_host(authority)?,
@@ -430,12 +427,12 @@ fn parse_authority(authority: &str) -> Result<(Option<UserInfo>, String)> {
     }
     let user = if !userinfo.contains(':') {
         let username = unescape(userinfo, Encoding::UserPassword)?;
-        UserInfo::user(username)
+        UserInfo::user(username.into_owned())
     } else {
         let (username, password) = split(userinfo, ':', true);
         let username = unescape(username, Encoding::UserPassword)?;
         let password = unescape(password, Encoding::UserPassword)?;
-        UserInfo::user_password(username, password)
+        UserInfo::user_password(username.into_owned(), password.into_owned())
     };
 
     Ok((Some(user), host))
@@ -489,7 +486,7 @@ fn valid_encoded(rawpath: &str, mode: Encoding) -> bool {
     true
 }
 
-fn parse_host(host: &str) -> Result<String> {
+fn parse_host<'a>(host: &'a str) -> Result<Cow<'a, str>> {
     println!("parse host input. {}", host);
     if host.starts_with('[') {
         let i = host.rfind(']');
@@ -508,7 +505,7 @@ fn parse_host(host: &str) -> Result<String> {
             let host1 = unescape(&host[..zone], Encoding::Host)?;
             let host2 = unescape(&host[zone..i], Encoding::Zone)?;
             let host3 = unescape(&host[i..], Encoding::Host)?;
-            return Ok([host1, host2, host3].concat());
+            return Ok(Cow::Owned([host1, host2, host3].concat()));
         }
     } else if let Some(i) = host.find(':') {
         let colon_port = &host[i..];
@@ -518,6 +515,53 @@ fn parse_host(host: &str) -> Result<String> {
     }
 
     unescape(host, Encoding::Host)
+}
+
+pub struct Values<'a> {
+    inner: HashMap<Cow<'a, str>, Vec<Cow<'a, str>>>,
+}
+
+impl<'a> Values<'a> {
+    pub fn get(&self, key: &str) -> &str {
+        if self.inner.is_empty() {
+            return "";
+        }
+
+        if let Some(vs) = self.inner.get(key) {
+            if vs.is_empty() {
+                return "";
+            } else {
+                return &vs[0];
+            }
+        }
+        ""
+    }
+
+    pub fn set(&mut self, key: Cow<'a, str>, value: Cow<'a, str>) {
+        let v = self.inner.entry(key).or_insert_with(Vec::new);
+        if !v.is_empty() {
+            v.clear();
+        }
+        v.push(value);
+    }
+
+    pub fn add(&mut self, key: Cow<'a, str>, value: Cow<'a, str>) {
+        let v = self.inner.entry(key).or_insert_with(Vec::new);
+        v.push(value);
+    }
+
+    pub fn delete(&mut self, key: Cow<'a, str>) {
+        if self.inner.contains_key(&key) {
+            self.inner.remove(&key);
+        }
+    }
+}
+
+fn parse_query(query: &str) -> Result<Option<()>> {
+    if query.is_empty() {
+        return Ok(None);
+    }
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -1227,7 +1271,7 @@ mod test {
         let cases = vec![("hello.%e4%b8%96%e7%95%8c.com", "hello.世界.com")];
         for case in cases {
             let output = parse_host(case.0);
-            assert_eq!(output, Ok(case.1.to_string()));
+            assert_eq!(output, Ok(Cow::Owned(case.1.to_string())));
         }
     }
 
@@ -1507,5 +1551,11 @@ mod test {
             let url = b.parse_reference("scheme:opaque").unwrap();
             assert_ne!(url, b);
         }
+    }
+
+    #[test]
+    fn test_index_any() {
+        let a = "abcdefg1234567hijk";
+        // a.matches(|c| {})
     }
 }

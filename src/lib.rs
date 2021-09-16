@@ -1,6 +1,8 @@
 pub mod errors;
 pub mod url;
 
+use std::borrow::Cow;
+
 use errors::Error;
 
 static UPPER_HEX: &[u8; 16] = b"0123456789ABCDEF";
@@ -18,11 +20,11 @@ enum Encoding {
     Fragment,
 }
 
-pub fn query_unescape(s: &str) -> Result<String> {
+pub fn query_unescape<'a>(s: &'a str) -> Result<Cow<'a, str>> {
     unescape(s, Encoding::QueryComponent)
 }
 
-pub fn path_unescape(s: &str) -> Result<String> {
+pub fn path_unescape<'a>(s: &'a str) -> Result<Cow<'a, str>> {
     unescape(s, Encoding::PathSegment)
 }
 
@@ -32,27 +34,42 @@ fn ishex(c: u8) -> bool {
 
 fn unhex(c: u8) -> u8 {
     match c as char {
-        '0'..='9' => c - '0' as u8,
-        'a'..='f' => c - 'a' as u8 + 10,
-        'A'..='F' => c - 'A' as u8 + 10,
+        '0'..='9' => c - b'0',
+        'a'..='f' => c - b'a' + 10,
+        'A'..='F' => c - b'A' + 10,
         _ => 0,
     }
 }
 
 fn should_escape(c: u8, mode: Encoding) -> bool {
     let c = c as char;
-    if 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' {
+    if matches!(c, 'a'..='z' | 'A' ..='Z' | '0'..='9') {
         return false;
     }
 
-    match mode {
-        Encoding::Host | Encoding::Zone => match c {
-            '!' | '$' | '&' | '\'' | '(' | ')' | '*' | '+' | ',' | ';' | '=' | ':' | '[' | ']'
-            | '<' | '>' | '"' => return false,
-            _ => {}
-        },
-        _ => {}
-    };
+    if matches!(mode, Encoding::Host | Encoding::Zone)
+        && matches!(
+            c,
+            '!' | '$'
+                | '&'
+                | '\''
+                | '('
+                | ')'
+                | '*'
+                | '+'
+                | ','
+                | ';'
+                | '='
+                | ':'
+                | '['
+                | ']'
+                | '<'
+                | '>'
+                | '"'
+        )
+    {
+        return false;
+    }
 
     match c {
         '-' | '_' | '.' | '~' => return false,
@@ -105,26 +122,10 @@ fn should_escape(c: u8, mode: Encoding) -> bool {
         _ => {}
     }
 
-    if mode == Encoding::Fragment {
-        match c {
-            '!' | '(' | ')' | '*' => return false,
-            _ => {}
-        }
-    }
-
-    true
+    !(matches!(mode, Encoding::Fragment) && matches!(c, '!' | '(' | ')' | '*'))
 }
 
-fn unescape(s: &str, mode: Encoding) -> Result<String> {
-    println!("input: {}, length: {}", s, s.len());
-    for tt in s.as_bytes() {
-        print!("{}, ", *tt as u32);
-    }
-    println!();
-    for tt in s.chars() {
-        print!("{}, ", tt as u32);
-    }
-    println!();
+fn unescape(s: &str, mode: Encoding) -> Result<Cow<'_, str>> {
     let mut n = 0;
     let mut has_plus = false;
     let bytes = s.as_bytes();
@@ -186,12 +187,12 @@ fn unescape(s: &str, mode: Encoding) -> Result<String> {
     }
 
     if n == 0 && !has_plus {
-        return Ok(s.to_string());
+        return Ok(Cow::Borrowed(s));
     }
     println!("s: {:?}", s);
     println!("n: {:?}", n);
     println!("mode: {:?}", mode);
-    build_unescape(s, n, mode)
+    Ok(Cow::Owned(build_unescape(s, n, mode)?))
 }
 
 fn build_unescape(input: &str, n: usize, mode: Encoding) -> Result<String> {
@@ -227,26 +228,7 @@ fn build_unescape(input: &str, n: usize, mode: Encoding) -> Result<String> {
         }
         i += 1;
     }
-    // println!("dump:");
-    // for c in result.chars() {
-    //     print!("{}, ", c as u32)
-    // }
-    // println!();
-    // for c in result.chars() {
-    //     print!("{}, ", c as u32);
-    // }
-    // println!("\ndump finish");
-    // println!("result: {}", result);
-    // let finally = String::from_utf8_lossy(result.as_bytes()).to_string();
-    // println!("finally: {}", finally);
-    // Ok(finally)
-    {
-        println!("bs");
-        for v in result.iter() {
-            print!("{}, ", *v);
-        }
-        println!();
-    }
+
     Ok(unsafe { String::from_utf8_unchecked(result) })
 }
 
@@ -289,9 +271,8 @@ fn escape(s: &str, mode: Encoding) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::result;
-
     use crate::{should_escape, Encoding};
+    use std::result;
 
     #[test]
     fn it_works() {
@@ -368,13 +349,15 @@ mod tests {
 
     #[test]
     fn test_unescape() {
-        let tests: Vec<(&str, Result<String>)> = vec![
-            ("", Ok("".to_string())),
-            ("abc", Ok("abc".to_string())),
-            ("1%41", Ok("1A".to_string())),
-            ("1%41%42%43", Ok("1ABC".to_string())),
-            ("%4a", Ok("J".to_string())),
-            ("%6F", Ok("o".to_string())),
+        use std::borrow::Cow;
+
+        let tests: Vec<(&str, Result<Cow<str>>)> = vec![
+            ("", Ok(Cow::Owned("".to_string()))),
+            ("abc", Ok(Cow::Owned("abc".to_string()))),
+            ("1%41", Ok(Cow::Owned("1A".to_string()))),
+            ("1%41%42%43", Ok(Cow::Owned("1ABC".to_string()))),
+            ("%4a", Ok(Cow::Owned("J".to_string()))),
+            ("%6F", Ok(Cow::Owned("o".to_string()))),
             (
                 "%", // not enough characters after %
                 Err(Error::Parse("%".to_string())),
@@ -395,9 +378,9 @@ mod tests {
                 "%zzzzz", // invalid hex digits
                 Err(Error::Parse("%zz".to_string())),
             ),
-            ("a+b", Ok("a b".to_string())),
-            ("a%20b", Ok("a b".to_string())),
-            ("%25", Ok("%".to_string())),
+            ("a+b", Ok(Cow::Owned("a b".to_string()))),
+            ("a%20b", Ok(Cow::Owned("a b".to_string()))),
+            ("%25", Ok(Cow::Owned("%".to_string()))),
         ];
 
         for (input, expect) in tests {
@@ -415,7 +398,7 @@ mod tests {
                     if let Ok(s) = query_unescape(&input.replace('+', "XXX")) {
                         in_value = input.to_string();
                         let tmp = s.replace("XXX", "+");
-                        out_value = Ok(tmp);
+                        out_value = Ok(Cow::Owned(tmp));
                     } else {
                         continue;
                     }
