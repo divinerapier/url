@@ -7,6 +7,59 @@ pub struct Value<'a> {
     inner: HashMap<Cow<'a, str>, Vec<Cow<'a, str>>>,
 }
 
+pub struct Pair<'a>(String, &'a Vec<Cow<'a, str>>);
+
+pub struct PairIterator<'a> {
+    key: String,
+    values: &'a [Cow<'a, str>],
+    current_index: usize,
+}
+
+impl<'a> Iterator for PairIterator<'a> {
+    type Item = (String, &'a Cow<'a, str>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current_index >= self.values.len() {
+            None
+        } else {
+            let result = &self.values[self.current_index];
+            self.current_index += 1;
+            Some((self.key.clone(), result))
+        }
+    }
+}
+
+impl<'a> IntoIterator for Pair<'a> {
+    type Item = (String, &'a Cow<'a, str>);
+
+    type IntoIter = PairIterator<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        PairIterator {
+            key: self.0,
+            values: self.1,
+            current_index: 0,
+        }
+    }
+}
+
+impl<'a> Value<'a> {
+    pub fn encode(&self) -> String {
+        self.inner
+            .iter()
+            .map(|(a, b)| (super::query_escape(a), b))
+            .map(|(a, b)| Pair(a.to_string(), b))
+            .flatten()
+            .map(|(k, v)| {
+                let k: String = k;
+                let v = super::query_escape(&v);
+                k + "=" + &v
+            })
+            .collect::<Vec<String>>()
+            .join("&")
+    }
+}
+
 impl<'a> TryFrom<&'a str> for Value<'a> {
     type Error = Error;
 

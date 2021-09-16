@@ -233,15 +233,15 @@ fn build_unescape(input: &str, n: usize, mode: Encoding) -> Result<String> {
     Ok(unsafe { String::from_utf8_unchecked(result) })
 }
 
-pub fn path_escape(s: &str) -> String {
+pub fn path_escape(s: &str) -> Cow<'_, str> {
     escape(s, Encoding::PathSegment)
 }
 
-pub fn query_escape(s: &str) -> String {
+pub fn query_escape(s: &str) -> Cow<'_, str> {
     escape(s, Encoding::QueryComponent)
 }
 
-fn escape(s: &str, mode: Encoding) -> String {
+fn escape(s: &str, mode: Encoding) -> Cow<'_, str> {
     let (mut space_count, mut hex_count) = (0, 0);
     let bytes = s.as_bytes();
     for &c in bytes {
@@ -255,11 +255,11 @@ fn escape(s: &str, mode: Encoding) -> String {
     }
 
     if space_count == 0 && hex_count == 0 {
-        return s.to_string();
+        return Cow::Borrowed(s);
     }
 
     if hex_count == 0 {
-        return s.replace(' ', "+");
+        return Cow::Owned(s.replace(' ', "+"));
     }
 
     let mut t = String::with_capacity(s.len() + 2 * hex_count);
@@ -274,7 +274,7 @@ fn escape(s: &str, mode: Encoding) -> String {
             t.push(c as char);
         }
     }
-    t
+    Cow::Owned(t)
 }
 
 #[cfg(test)]

@@ -50,7 +50,7 @@ impl Display for UserInfo {
         if self.password_set {
             u = u
                 + ":"
-                + &match self.password {
+                + match self.password {
                     Some(ref password) => escape(password, Encoding::UserPassword),
                     None => escape("", Encoding::UserPassword),
                 };
@@ -251,7 +251,7 @@ impl URL {
             return "*".to_string();
         }
 
-        escape(&self.path, Encoding::Path)
+        escape(&self.path, Encoding::Path).to_string()
     }
 
     pub fn escaped_fragment(&self) -> String {
@@ -262,7 +262,7 @@ impl URL {
                 }
             }
         }
-        escape(&self.fragment, Encoding::Fragment)
+        escape(&self.fragment, Encoding::Fragment).to_string()
     }
 
     pub fn resolve_reference(&self, refer: &URL) -> Result<URL> {
