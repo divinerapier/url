@@ -1,12 +1,30 @@
-use std::{borrow::Cow, collections::HashMap};
+use std::{borrow::Cow, collections::HashMap, convert::TryFrom, iter::FromIterator, str::FromStr};
 
 use crate::{errors::Error, query_unescape, Result};
 
-pub type Value<'a> = HashMap<Cow<'a, str>, Vec<Cow<'a, str>>>;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Value<'a> {
+    inner: HashMap<Cow<'a, str>, Vec<Cow<'a, str>>>,
+}
 
-fn parse_query(query: &str) -> Result<Value> {
+impl<'a> TryFrom<&'a str> for Value<'a> {
+    type Error = Error;
+
+    fn try_from(query: &'a str) -> Result<Self> {
+        parse_query(query)
+    }
+}
+
+impl<'a> FromIterator<(Cow<'a, str>, Vec<Cow<'a, str>>)> for Value<'a> {
+    fn from_iter<T: IntoIterator<Item = (Cow<'a, str>, Vec<Cow<'a, str>>)>>(iter: T) -> Self {
+        let inner = HashMap::from_iter(iter);
+        Value { inner }
+    }
+}
+
+fn parse_query<'a>(query: &'a str) -> Result<Value<'a>> {
     let mut query = query;
-    let mut result = Value::new();
+    let mut inner = HashMap::<Cow<'a, str>, Vec<Cow<'a, str>>>::new();
 
     while !query.is_empty() {
         let mut key = query;
@@ -41,26 +59,22 @@ fn parse_query(query: &str) -> Result<Value> {
         // }
         let key = query_unescape(key)?;
         let value = query_unescape(value)?;
-        result.entry(key).or_default().push(value);
+        inner.entry(key).or_default().push(value);
     }
 
-    Ok(result)
+    Ok(Value { inner })
 }
 
 #[cfg(test)]
 mod test {
     use std::borrow::Cow;
+    use std::convert::TryInto;
     use std::iter::FromIterator;
 
     use crate::query::Value;
 
     #[test]
     fn test() {
-        // struct ParseTest {
-        //     query: &'static str,
-        //     out: Value<'static>,
-        //     ok: bool,
-        // }
         let tests = vec![
             (
                 "a=1",
@@ -148,12 +162,13 @@ mod test {
             ),
         ];
         for test in tests {
-            let result = super::parse_query(test.0);
+            let result = test.0.try_into();
+            // let result = super::parse_query(test.0);
             if test.2 {
                 let result = result.clone();
                 assert_eq!(test.1, result.unwrap());
             }
-            println!("test: {:?}", test);
+            // println!("test: {:?}", test);
             if !test.2 {
                 assert!(result.is_err())
             }
