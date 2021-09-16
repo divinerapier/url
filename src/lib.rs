@@ -1,4 +1,5 @@
 pub mod errors;
+pub mod query;
 pub mod url;
 
 use std::borrow::Cow;
@@ -230,6 +231,14 @@ fn build_unescape(input: &str, n: usize, mode: Encoding) -> Result<String> {
     }
 
     Ok(unsafe { String::from_utf8_unchecked(result) })
+}
+
+pub fn path_escape(s: &str) -> String {
+    escape(s, Encoding::PathSegment)
+}
+
+pub fn query_escape(s: &str) -> String {
+    escape(s, Encoding::QueryComponent)
 }
 
 fn escape(s: &str, mode: Encoding) -> String {

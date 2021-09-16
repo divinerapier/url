@@ -20,4 +20,6 @@ pub enum Error {
     InvalidPort(String),
     #[error("invalid userinfo")]
     InvalidUserInfo,
+    #[error("invalid semicolon separator in query")]
+    InvalidSemicolonSeparatorInQuery,
 }

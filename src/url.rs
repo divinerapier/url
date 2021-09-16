@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::HashMap, fmt::Display};
+use std::{borrow::Cow, collections::HashMap, fmt::Display, str::FromStr};
 
 use crate::{escape, should_escape, unescape, Encoding, Error, Result};
 
@@ -107,6 +107,14 @@ fn getscheme(rawurl: &str) -> Result<(Option<&str>, Option<&str>)> {
     }
 
     Ok((None, Some(rawurl)))
+}
+
+impl FromStr for URL {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        URL::parse(s)
+    }
 }
 
 impl URL {
@@ -555,13 +563,6 @@ impl<'a> Values<'a> {
             self.inner.remove(&key);
         }
     }
-}
-
-fn parse_query(query: &str) -> Result<Option<()>> {
-    if query.is_empty() {
-        return Ok(None);
-    }
-    Ok(None)
 }
 
 #[cfg(test)]
