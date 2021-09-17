@@ -3,7 +3,7 @@ use std::{borrow::Cow, collections::HashMap, convert::TryFrom, iter::FromIterato
 use crate::{errors::Error, query_unescape, Result};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Value<'a> {
+pub struct Values<'a> {
     inner: HashMap<Cow<'a, str>, Vec<Cow<'a, str>>>,
 }
 
@@ -43,24 +43,46 @@ impl<'a> IntoIterator for Pair<'a> {
     }
 }
 
-impl<'a> Value<'a> {
+impl<'a> Values<'a> {
     pub fn encode(&self) -> String {
-        self.inner
+        // Unsorted version
+        // self.inner
+        //     .iter()
+        //     .map(|(a, b)| (super::query_escape(a), b))
+        //     .map(|(a, b)| Pair(a.to_string(), b))
+        //     .flatten()
+        //     .map(|(k, v)| {
+        //         let k: String = k;
+        //         let v = super::query_escape(&v);
+        //         k + "=" + &v
+        //     })
+        //     .collect::<Vec<String>>()
+        //     .join("&")
+
+        let mut keys = self
+            .inner
+            .keys()
+            .map(|key| (super::query_escape(key).to_string()))
+            .collect::<Vec<String>>();
+        keys.sort();
+        let mut pairs = vec![];
+        for key in keys.iter() {
+            let str_key: &str = key;
+            let values = self.inner.get(&Cow::Borrowed(str_key)).unwrap();
+            for value in values {
+                let value = super::query_escape(value);
+                pairs.push((str_key, value));
+            }
+        }
+        pairs
             .iter()
-            .map(|(a, b)| (super::query_escape(a), b))
-            .map(|(a, b)| Pair(a.to_string(), b))
-            .flatten()
-            .map(|(k, v)| {
-                let k: String = k;
-                let v = super::query_escape(&v);
-                k + "=" + &v
-            })
-            .collect::<Vec<String>>()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect::<Vec<_>>()
             .join("&")
     }
 }
 
-impl<'a> TryFrom<&'a str> for Value<'a> {
+impl<'a> TryFrom<&'a str> for Values<'a> {
     type Error = Error;
 
     fn try_from(query: &'a str) -> Result<Self> {
@@ -68,14 +90,14 @@ impl<'a> TryFrom<&'a str> for Value<'a> {
     }
 }
 
-impl<'a> FromIterator<(Cow<'a, str>, Vec<Cow<'a, str>>)> for Value<'a> {
+impl<'a> FromIterator<(Cow<'a, str>, Vec<Cow<'a, str>>)> for Values<'a> {
     fn from_iter<T: IntoIterator<Item = (Cow<'a, str>, Vec<Cow<'a, str>>)>>(iter: T) -> Self {
         let inner = HashMap::from_iter(iter);
-        Value { inner }
+        Values { inner }
     }
 }
 
-fn parse_query<'a>(query: &'a str) -> Result<Value<'a>> {
+fn parse_query<'a>(query: &'a str) -> Result<Values<'a>> {
     let mut query = query;
     let mut inner = HashMap::<Cow<'a, str>, Vec<Cow<'a, str>>>::new();
 
@@ -115,7 +137,7 @@ fn parse_query<'a>(query: &'a str) -> Result<Value<'a>> {
         inner.entry(key).or_default().push(value);
     }
 
-    Ok(Value { inner })
+    Ok(Values { inner })
 }
 
 #[cfg(test)]
@@ -124,19 +146,19 @@ mod test {
     use std::convert::TryInto;
     use std::iter::FromIterator;
 
-    use crate::query::Value;
+    use crate::query::Values;
 
     #[test]
-    fn test() {
+    fn test_parse() {
         let tests = vec![
             (
                 "a=1",
-                Value::from_iter(vec![(Cow::Borrowed("a"), vec![Cow::Borrowed("1")])]),
+                Values::from_iter(vec![(Cow::Borrowed("a"), vec![Cow::Borrowed("1")])]),
                 true,
             ),
             (
                 "a=1&b=2",
-                Value::from_iter(vec![
+                Values::from_iter(vec![
                     (Cow::Borrowed("a"), vec![Cow::Borrowed("1")]),
                     (Cow::Borrowed("b"), vec![Cow::Borrowed("2")]),
                 ]),
@@ -144,7 +166,7 @@ mod test {
             ),
             (
                 "a=1&a=2&a=banana",
-                Value::from_iter(vec![(
+                Values::from_iter(vec![(
                     Cow::Borrowed("a"),
                     vec![
                         Cow::Borrowed("1"),
@@ -156,37 +178,37 @@ mod test {
             ),
             (
                 "ascii=%3Ckey%3A+0x90%3E",
-                Value::from_iter(vec![(
+                Values::from_iter(vec![(
                     Cow::Borrowed("ascii"),
                     vec![Cow::Borrowed("<key: 0x90>")],
                 )]),
                 true,
             ),
-            ("a=1;b=2", Value::from_iter(vec![]), false),
-            ("a;b=2", Value::from_iter(vec![]), false),
+            ("a=1;b=2", Values::from_iter(vec![]), false),
+            ("a;b=2", Values::from_iter(vec![]), false),
             (
                 "a=%3B",
-                Value::from_iter(vec![(Cow::Borrowed("a"), vec![Cow::Borrowed(";")])]),
+                Values::from_iter(vec![(Cow::Borrowed("a"), vec![Cow::Borrowed(";")])]),
                 true,
             ),
             (
                 "a%3Bb=1",
-                Value::from_iter(vec![(Cow::Borrowed("a;b"), vec![Cow::Borrowed("1")])]),
+                Values::from_iter(vec![(Cow::Borrowed("a;b"), vec![Cow::Borrowed("1")])]),
                 true,
             ),
             (
                 "a=1&a=2;a=banana",
-                Value::from_iter(vec![(Cow::Borrowed("a"), vec![Cow::Borrowed("1")])]),
+                Values::from_iter(vec![(Cow::Borrowed("a"), vec![Cow::Borrowed("1")])]),
                 false,
             ),
             (
                 "a;b&c=1",
-                Value::from_iter(vec![(Cow::Borrowed("c"), vec![Cow::Borrowed("1")])]),
+                Values::from_iter(vec![(Cow::Borrowed("c"), vec![Cow::Borrowed("1")])]),
                 false,
             ),
             (
                 "a=1&b=2;a=3&c=4",
-                Value::from_iter(vec![
+                Values::from_iter(vec![
                     (Cow::Borrowed("a"), vec![Cow::Borrowed("1")]),
                     (Cow::Borrowed("c"), vec![Cow::Borrowed("4")]),
                 ]),
@@ -194,23 +216,23 @@ mod test {
             ),
             (
                 "a=1&b=2;c=3",
-                Value::from_iter(vec![(Cow::Borrowed("a"), vec![Cow::Borrowed("1")])]),
+                Values::from_iter(vec![(Cow::Borrowed("a"), vec![Cow::Borrowed("1")])]),
                 false,
             ),
-            (";", Value::from_iter(vec![]), false),
+            (";", Values::from_iter(vec![]), false),
             (
                 "a=1&;",
-                Value::from_iter(vec![(Cow::Borrowed("a"), vec![Cow::Borrowed("1")])]),
+                Values::from_iter(vec![(Cow::Borrowed("a"), vec![Cow::Borrowed("1")])]),
                 false,
             ),
             (
                 ";a=1&b=2",
-                Value::from_iter(vec![(Cow::Borrowed("b"), vec![Cow::Borrowed("2")])]),
+                Values::from_iter(vec![(Cow::Borrowed("b"), vec![Cow::Borrowed("2")])]),
                 false,
             ),
             (
                 "a=1&b=2;",
-                Value::from_iter(vec![(Cow::Borrowed("a"), vec![Cow::Borrowed("1")])]),
+                Values::from_iter(vec![(Cow::Borrowed("a"), vec![Cow::Borrowed("1")])]),
                 false,
             ),
         ];
@@ -225,6 +247,64 @@ mod test {
             if !test.2 {
                 assert!(result.is_err())
             }
+        }
+    }
+
+    #[test]
+    fn test_encode() {
+        let tests = vec![
+            (
+                Values::from_iter(vec![
+                    (Cow::Borrowed("q"), vec![Cow::Borrowed("puppies")]),
+                    (Cow::Borrowed("oe"), vec![Cow::Borrowed("utf8")]),
+                ]),
+                "oe=utf8&q=puppies",
+            ),
+            (
+                Values::from_iter(vec![(
+                    Cow::Borrowed("q"),
+                    vec![
+                        Cow::Borrowed("dogs"),
+                        Cow::Borrowed("&"),
+                        Cow::Borrowed("7"),
+                    ],
+                )]),
+                "q=dogs&q=%26&q=7",
+            ),
+            (
+                Values::from_iter(vec![
+                    (
+                        Cow::Borrowed("a"),
+                        vec![
+                            Cow::Borrowed("a1"),
+                            Cow::Borrowed("a2"),
+                            Cow::Borrowed("a3"),
+                        ],
+                    ),
+                    (
+                        Cow::Borrowed("b"),
+                        vec![
+                            Cow::Borrowed("b1"),
+                            Cow::Borrowed("b2"),
+                            Cow::Borrowed("b3"),
+                        ],
+                    ),
+                    (
+                        Cow::Borrowed("c"),
+                        vec![
+                            Cow::Borrowed("c1"),
+                            Cow::Borrowed("c2"),
+                            Cow::Borrowed("c3"),
+                        ],
+                    ),
+                ]),
+                "a=a1&a=a2&a=a3&b=b1&b=b2&b=b3&c=c1&c=c2&c=c3",
+            ),
+        ];
+
+        for test in tests {
+            let q = test.0.encode();
+            assert_eq!(q, test.1.to_string());
         }
     }
 }

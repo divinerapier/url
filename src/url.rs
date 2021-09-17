@@ -525,45 +525,45 @@ fn parse_host<'a>(host: &'a str) -> Result<Cow<'a, str>> {
     unescape(host, Encoding::Host)
 }
 
-pub struct Values<'a> {
-    inner: HashMap<Cow<'a, str>, Vec<Cow<'a, str>>>,
-}
+// pub struct Values<'a> {
+//     inner: HashMap<Cow<'a, str>, Vec<Cow<'a, str>>>,
+// }
 
-impl<'a> Values<'a> {
-    pub fn get(&self, key: &str) -> &str {
-        if self.inner.is_empty() {
-            return "";
-        }
+// impl<'a> Values<'a> {
+//     pub fn get(&self, key: &str) -> &str {
+//         if self.inner.is_empty() {
+//             return "";
+//         }
 
-        if let Some(vs) = self.inner.get(key) {
-            if vs.is_empty() {
-                return "";
-            } else {
-                return &vs[0];
-            }
-        }
-        ""
-    }
+//         if let Some(vs) = self.inner.get(key) {
+//             if vs.is_empty() {
+//                 return "";
+//             } else {
+//                 return &vs[0];
+//             }
+//         }
+//         ""
+//     }
 
-    pub fn set(&mut self, key: Cow<'a, str>, value: Cow<'a, str>) {
-        let v = self.inner.entry(key).or_insert_with(Vec::new);
-        if !v.is_empty() {
-            v.clear();
-        }
-        v.push(value);
-    }
+//     pub fn set(&mut self, key: Cow<'a, str>, value: Cow<'a, str>) {
+//         let v = self.inner.entry(key).or_insert_with(Vec::new);
+//         if !v.is_empty() {
+//             v.clear();
+//         }
+//         v.push(value);
+//     }
 
-    pub fn add(&mut self, key: Cow<'a, str>, value: Cow<'a, str>) {
-        let v = self.inner.entry(key).or_insert_with(Vec::new);
-        v.push(value);
-    }
+//     pub fn add(&mut self, key: Cow<'a, str>, value: Cow<'a, str>) {
+//         let v = self.inner.entry(key).or_insert_with(Vec::new);
+//         v.push(value);
+//     }
 
-    pub fn delete(&mut self, key: Cow<'a, str>) {
-        if self.inner.contains_key(&key) {
-            self.inner.remove(&key);
-        }
-    }
-}
+//     pub fn delete(&mut self, key: Cow<'a, str>) {
+//         if self.inner.contains_key(&key) {
+//             self.inner.remove(&key);
+//         }
+//     }
+// }
 
 #[cfg(test)]
 mod test {
