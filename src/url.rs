@@ -1,8 +1,16 @@
-use std::{borrow::Cow, collections::HashMap, fmt::Display, str::FromStr};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    convert::{TryFrom, TryInto},
+    fmt::Display,
+    str::FromStr,
+};
 
 use crate::{escape, should_escape, unescape, Encoding, Error, Result};
 
-#[derive(Default, Debug, PartialEq, Eq, Clone)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Default, Debug, PartialEq, Eq, Clone, Deserialize, Serialize)]
 pub struct URL {
     scheme: String,
     opaque: String,
@@ -16,7 +24,7 @@ pub struct URL {
     raw_fragment: String,
 }
 
-#[derive(Default, Debug, PartialEq, Eq, Clone)]
+#[derive(Default, Debug, PartialEq, Eq, Clone, Deserialize, Serialize)]
 pub struct UserInfo {
     username: Option<String>,
     password: Option<String>,
@@ -294,6 +302,60 @@ impl URL {
         url.set_path(&resolve_path(&self.escaped_path(), &refer.escaped_path()))?;
         Ok(url)
     }
+
+    pub fn query(&self) -> Result<crate::query::Values> {
+        crate::query::Values::try_from(self.raw_query.as_ref())
+    }
+
+    pub fn request_uri(&self) -> String {
+        let result = if self.opaque.is_empty() {
+            let result = self.escaped_path();
+            if result.is_empty() {
+                "/".to_string()
+            } else {
+                result
+            }
+        } else if self.opaque.starts_with("//") {
+            self.scheme.clone() + ":" + &self.opaque
+        } else {
+            self.opaque.clone()
+        };
+        if self.force_query || !self.raw_query.is_empty() {
+            result + "?" + &self.raw_query
+        } else {
+            result
+        }
+    }
+
+    pub fn hostname(&self) -> &str {
+        let (host, _) = split_host_port(&self.host);
+        host
+    }
+
+    pub fn port(&self) -> Option<&str> {
+        let (_, port) = split_host_port(&self.host);
+        if port.is_empty() {
+            None
+        } else {
+            Some(port)
+        }
+    }
+}
+
+fn split_host_port(hostport: &str) -> (&str, &str) {
+    let mut host = hostport;
+    let mut port = "";
+    if let Some(colon) = hostport.rfind(':') {
+        if valid_optional_port(&hostport[colon..]) {
+            host = &hostport[..colon];
+            port = &hostport[colon + 1..];
+        }
+    }
+    if host.starts_with('[') && host.ends_with(']') {
+        let len = host.len();
+        host = &host[1..len - 1];
+    }
+    (host, port)
 }
 
 impl Display for URL {
@@ -460,6 +522,23 @@ fn valid_userinfo(s: &str) -> bool {
     true
 }
 
+// fn valid_optional_port(port: &str) -> bool {
+//     if port.is_empty() {
+//         return true;
+//     }
+//     if !port.starts_with(':') {
+//         return false;
+//     }
+//     let bytes = (&port[1..]).as_bytes();
+//     for c in bytes {
+//         let c = *c as char;
+//         if c < '0' || c > '9' {
+//             return false;
+//         }
+//     }
+//     true
+// }
+
 fn valid_optional_port(port: &str) -> bool {
     if port.is_empty() {
         return true;
@@ -467,12 +546,13 @@ fn valid_optional_port(port: &str) -> bool {
     if !port.starts_with(':') {
         return false;
     }
-    let bytes = (&port[1..]).as_bytes();
-    for c in bytes {
-        let c = *c as char;
-        if c < '0' || c > '9' {
+    for &b in port.as_bytes().iter().skip(1) {
+        if !(b'0'..=b'9').contains(&b) {
             return false;
         }
+        // if b < b'0' || b > b'9' {
+        //     return false;
+        // }
     }
     true
 }
@@ -1558,5 +1638,236 @@ mod test {
     fn test_index_any() {
         let a = "abcdefg1234567hijk";
         // a.matches(|c| {})
+    }
+
+    #[test]
+    fn test_request_uri() {
+        let tests = vec![
+            (
+                URL {
+                    scheme: "http".to_string(),
+                    host: "example.com".to_string(),
+                    path: "".to_string(),
+                    ..URL::default()
+                },
+                "/".to_string(),
+            ),
+            (
+                URL {
+                    scheme: "http".to_string(),
+                    host: "example.com".to_string(),
+                    path: "/a b".to_string(),
+                    ..URL::default()
+                },
+                "/a%20b".to_string(),
+            ),
+            // golang.org/issue/4860 variant 1
+            (
+                URL {
+                    scheme: "http".to_string(),
+                    host: "example.com".to_string(),
+                    opaque: "/%2F/%2F/".to_string(),
+                    ..URL::default()
+                },
+                "/%2F/%2F/".to_string(),
+            ),
+            // golang.org/issue/4860 variant 2
+            (
+                URL {
+                    scheme: "http".to_string(),
+                    host: "example.com".to_string(),
+                    opaque: "//other.example.com/%2F/%2F/".to_string(),
+                    ..URL::default()
+                },
+                "http://other.example.com/%2F/%2F/".to_string(),
+            ),
+            // better fix for issue 4860
+            (
+                URL {
+                    scheme: "http".to_string(),
+                    host: "example.com".to_string(),
+                    path: "/////".to_string(),
+                    raw_path: "/%2F/%2F/".to_string(),
+                    ..URL::default()
+                },
+                "/%2F/%2F/".to_string(),
+            ),
+            (
+                URL {
+                    scheme: "http".to_string(),
+                    host: "example.com".to_string(),
+                    path: "/////".to_string(),
+                    raw_path: "/WRONG/".to_string(), // ignored because doesn't match Path
+                    ..URL::default()
+                },
+                "/////".to_string(),
+            ),
+            (
+                URL {
+                    scheme: "http".to_string(),
+                    host: "example.com".to_string(),
+                    path: "/a b".to_string(),
+                    raw_query: "q=go+language".to_string(),
+                    ..URL::default()
+                },
+                "/a%20b?q=go+language".to_string(),
+            ),
+            (
+                URL {
+                    scheme: "http".to_string(),
+                    host: "example.com".to_string(),
+                    path: "/a b".to_string(),
+                    raw_path: "/a b".to_string(), // ignored because invalid
+                    raw_query: "q=go+language".to_string(),
+                    ..URL::default()
+                },
+                "/a%20b?q=go+language".to_string(),
+            ),
+            (
+                URL {
+                    scheme: "http".to_string(),
+                    host: "example.com".to_string(),
+                    path: "/a?b".to_string(),
+                    raw_path: "/a?b".to_string(), // ignored because invalid
+                    raw_query: "q=go+language".to_string(),
+                    ..URL::default()
+                },
+                "/a%3Fb?q=go+language".to_string(),
+            ),
+            (
+                URL {
+                    scheme: "myschema".to_string(),
+                    opaque: "opaque".to_string(),
+                    ..URL::default()
+                },
+                "opaque".to_string(),
+            ),
+            (
+                URL {
+                    scheme: "myschema".to_string(),
+                    opaque: "opaque".to_string(),
+                    raw_query: "q=go+language".to_string(),
+                    ..URL::default()
+                },
+                "opaque?q=go+language".to_string(),
+            ),
+            (
+                URL {
+                    scheme: "http".to_string(),
+                    host: "example.com".to_string(),
+                    path: "//foo".to_string(),
+                    ..URL::default()
+                },
+                "//foo".to_string(),
+            ),
+            (
+                URL {
+                    scheme: "http".to_string(),
+                    host: "example.com".to_string(),
+                    path: "/foo".to_string(),
+                    force_query: true,
+                    ..URL::default()
+                },
+                "/foo?".to_string(),
+            ),
+        ];
+        for test in tests {
+            let s = test.0.request_uri();
+            assert_eq!(s, test.1)
+        }
+    }
+
+    #[test]
+    fn test_start_request() {
+        let u = "*".parse::<URL>().unwrap();
+        let got = u.request_uri();
+        assert_eq!(got, "*".to_string())
+    }
+
+    #[test]
+    fn test_url_hostname_and_port() {
+        let tests = vec![
+            ("foo.com:80", "foo.com", Some("80")),
+            ("foo.com", "foo.com", None),
+            ("foo.com:", "foo.com", None),
+            ("FOO.COM", "FOO.COM", None),
+            ("1.2.3.4", "1.2.3.4", None),
+            ("1.2.3.4:80", "1.2.3.4", Some("80")),
+            ("[1:2:3:4]", "1:2:3:4", None),
+            ("[1:2:3:4]:80", "1:2:3:4", Some("80")),
+            ("[::1]:80", "::1", Some("80")),
+            ("[::1]", "::1", None),
+            ("[::1]:", "::1", None),
+            ("localhost", "localhost", None),
+            ("localhost:443", "localhost", Some("443")),
+            (
+                "some.super.long.domain.example.org:8080",
+                "some.super.long.domain.example.org",
+                Some("8080"),
+            ),
+            (
+                "[2001:0db8:85a3:0000:0000:8a2e:0370:7334]:17000",
+                "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
+                Some("17000"),
+            ),
+            (
+                "[2001:0db8:85a3:0000:0000:8a2e:0370:7334]",
+                "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
+                None,
+            ),
+            ("[google.com]:80", "google.com", Some("80")),
+            ("google.com]:80", "google.com]", Some("80")),
+            (
+                "google.com:80_invalid_port",
+                "google.com:80_invalid_port",
+                None,
+            ),
+            ("[::1]extra]:80", "::1]extra", Some("80")),
+            ("google.com]extra:extra", "google.com]extra:extra", None),
+        ];
+        for test in tests {
+            let u = URL {
+                host: test.0.to_string(),
+
+                ..URL::default()
+            };
+            let host = u.hostname();
+            let port = u.port();
+            assert_eq!(host, test.1);
+            assert_eq!(port, test.2);
+        }
+    }
+
+    #[test]
+    fn test_json() {
+        let u = "https://www.google.com/x?y=z".parse::<URL>().unwrap();
+        let js = serde_json::to_string(&u).unwrap();
+        let u1 = serde_json::from_str(&js).unwrap();
+        assert_eq!(u, u1);
+    }
+
+    #[test]
+    fn test_nil_url() {
+        let u = "http://foo.com/".parse::<URL>().unwrap();
+        assert_eq!(u.user, None);
+    }
+
+    #[test]
+    fn test_invalid_user_password() {
+        let res = "http://user^:passwo^rd@foo.com/".parse::<URL>();
+        assert_eq!(res, Err(Error::InvalidUserInfo))
+    }
+
+    #[test]
+    fn test_reject_control_characters() {
+        let tests = vec![
+            "http://foo.com/?foo\nbar",
+            "http\r://foo.com/",
+            "http://foo\x7f.com/",
+        ];
+        for test in tests {
+            let res = test.parse::<URL>();
+            assert_eq!(res, Err(Error::InvalidControlCharacterInURL))
+        }
     }
 }

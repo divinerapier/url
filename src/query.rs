@@ -7,6 +7,40 @@ pub struct Values<'a> {
     inner: HashMap<Cow<'a, str>, Vec<Cow<'a, str>>>,
 }
 
+impl<'a> Values<'a> {
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn get(&'a self, key: &'a str) -> Option<&'a str> {
+        if self.inner.is_empty() {
+            return None;
+        }
+        // let values = self.inner.get(&Cow::Borrowed(key))?;
+        let values = self.inner.get(key)?;
+        if values.is_empty() {
+            return None;
+        }
+        let value: &str = values[0].as_ref();
+        Some(value)
+    }
+
+    pub fn set(&mut self, key: Cow<'a, str>, value: Cow<'a, str>) {
+        self.inner.insert(key, vec![value]);
+    }
+
+    pub fn add(&mut self, key: Cow<'a, str>, value: Cow<'a, str>) {
+        self.inner.entry(key).or_default().push(value);
+    }
+
+    pub fn del(&mut self, key: &str) {
+        self.inner.remove(key);
+    }
+}
+
 pub struct Pair<'a>(String, &'a Vec<Cow<'a, str>>);
 
 pub struct PairIterator<'a> {
@@ -306,5 +340,20 @@ mod test {
             let q = test.0.encode();
             assert_eq!(q, test.1.to_string());
         }
+    }
+
+    #[test]
+    fn test_query_values() {
+        let u = "http://x.com?foo=bar&bar=1&bar=2"
+            .parse::<crate::url::URL>()
+            .unwrap();
+        let mut v = u.query().unwrap();
+        assert_eq!(v.len(), 2);
+        assert_eq!(v.get("foo"), Some("bar"));
+        assert_eq!(v.get("Foo"), None);
+        assert_eq!(v.get("bar"), Some("1"));
+        assert_eq!(v.get("baz"), None);
+        v.del("bar");
+        assert_eq!(v.get("bar"), None);
     }
 }
