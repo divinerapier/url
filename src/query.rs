@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::HashMap, convert::TryFrom, iter::FromIterator, str::FromStr};
+use std::{borrow::Cow, collections::HashMap, convert::TryFrom, iter::FromIterator};
 
 use crate::{errors::Error, query_unescape, Result};
 
@@ -183,7 +183,7 @@ mod test {
     use crate::query::Values;
 
     #[test]
-    fn test_parse() {
+    fn test_parse_query() {
         let tests = vec![
             (
                 "a=1",

@@ -1,10 +1,4 @@
-use std::{
-    borrow::Cow,
-    collections::HashMap,
-    convert::{TryFrom, TryInto},
-    fmt::Display,
-    str::FromStr,
-};
+use std::{borrow::Cow, convert::TryFrom, fmt::Display, str::FromStr};
 
 use crate::{escape, should_escape, unescape, Encoding, Error, Result};
 
@@ -175,9 +169,6 @@ impl URL {
                 url.raw_query = raw_query.to_string();
             }
 
-            println!("rest: {}", rest);
-            println!("raw query: {}", url.raw_query);
-
             if !rest.starts_with('/') {
                 if url.scheme.ne("") {
                     url.opaque = rest.to_string();
@@ -340,6 +331,16 @@ impl URL {
             Some(port)
         }
     }
+
+    pub fn redacted(&self) -> String {
+        let mut u = self.clone();
+        if let Some(u) = u.user.as_mut() {
+            if let Some(password) = u.password.as_mut() {
+                *password = "xxxxx".to_string();
+            }
+        }
+        u.to_string()
+    }
 }
 
 fn split_host_port(hostport: &str) -> (&str, &str) {
@@ -374,6 +375,7 @@ impl Display for URL {
                 }
                 if let Some(ref ui) = self.user {
                     buf.push_str(&ui.to_string());
+                    buf.push('@');
                 }
                 if !self.host.is_empty() {
                     buf.push_str(&escape(&self.host, Encoding::Host));
@@ -415,7 +417,6 @@ fn resolve_path(base: &str, r: &str) -> String {
             Some(i) => i + 1,
             None => 0,
         };
-        println!("i: {}. len: {}", i, base.len());
         (&base[..i]).to_string() + r
     } else {
         r.to_string()
@@ -522,23 +523,6 @@ fn valid_userinfo(s: &str) -> bool {
     true
 }
 
-// fn valid_optional_port(port: &str) -> bool {
-//     if port.is_empty() {
-//         return true;
-//     }
-//     if !port.starts_with(':') {
-//         return false;
-//     }
-//     let bytes = (&port[1..]).as_bytes();
-//     for c in bytes {
-//         let c = *c as char;
-//         if c < '0' || c > '9' {
-//             return false;
-//         }
-//     }
-//     true
-// }
-
 fn valid_optional_port(port: &str) -> bool {
     if port.is_empty() {
         return true;
@@ -550,9 +534,6 @@ fn valid_optional_port(port: &str) -> bool {
         if !(b'0'..=b'9').contains(&b) {
             return false;
         }
-        // if b < b'0' || b > b'9' {
-        //     return false;
-        // }
     }
     true
 }
@@ -574,8 +555,7 @@ fn valid_encoded(rawpath: &str, mode: Encoding) -> bool {
     true
 }
 
-fn parse_host<'a>(host: &'a str) -> Result<Cow<'a, str>> {
-    println!("parse host input. {}", host);
+fn parse_host(host: &str) -> Result<Cow<str>> {
     if host.starts_with('[') {
         let i = host.rfind(']');
         if i.is_none() {
@@ -604,46 +584,6 @@ fn parse_host<'a>(host: &'a str) -> Result<Cow<'a, str>> {
 
     unescape(host, Encoding::Host)
 }
-
-// pub struct Values<'a> {
-//     inner: HashMap<Cow<'a, str>, Vec<Cow<'a, str>>>,
-// }
-
-// impl<'a> Values<'a> {
-//     pub fn get(&self, key: &str) -> &str {
-//         if self.inner.is_empty() {
-//             return "";
-//         }
-
-//         if let Some(vs) = self.inner.get(key) {
-//             if vs.is_empty() {
-//                 return "";
-//             } else {
-//                 return &vs[0];
-//             }
-//         }
-//         ""
-//     }
-
-//     pub fn set(&mut self, key: Cow<'a, str>, value: Cow<'a, str>) {
-//         let v = self.inner.entry(key).or_insert_with(Vec::new);
-//         if !v.is_empty() {
-//             v.clear();
-//         }
-//         v.push(value);
-//     }
-
-//     pub fn add(&mut self, key: Cow<'a, str>, value: Cow<'a, str>) {
-//         let v = self.inner.entry(key).or_insert_with(Vec::new);
-//         v.push(value);
-//     }
-
-//     pub fn delete(&mut self, key: Cow<'a, str>) {
-//         if self.inner.contains_key(&key) {
-//             self.inner.remove(&key);
-//         }
-//     }
-// }
 
 #[cfg(test)]
 mod test {
@@ -1287,7 +1227,6 @@ mod test {
         ];
 
         for case in cases {
-            println!("parse {}", case.0);
             match URL::parse(case.0) {
                 Err(e) => {
                     println!("input: {:?}. error: {}", case, e);
@@ -1296,6 +1235,9 @@ mod test {
                     assert_eq!(u, case.1);
                 }
             }
+            let s = case.1.to_string();
+            let expected = if case.2.is_empty() { case.0 } else { case.2 };
+            assert_eq!(s, expected.to_string());
         }
     }
 
@@ -1335,7 +1277,6 @@ mod test {
             ),
         ];
         for case in cases {
-            println!("parse {}", case.0);
             match URL::parse(case.0) {
                 Err(e) => {
                     println!("input: {:?}. error: {}", case, e);
@@ -1635,12 +1576,6 @@ mod test {
     }
 
     #[test]
-    fn test_index_any() {
-        let a = "abcdefg1234567hijk";
-        // a.matches(|c| {})
-    }
-
-    #[test]
     fn test_request_uri() {
         let tests = vec![
             (
@@ -1868,6 +1803,112 @@ mod test {
         for test in tests {
             let res = test.parse::<URL>();
             assert_eq!(res, Err(Error::InvalidControlCharacterInURL))
+        }
+    }
+
+    #[test]
+    fn test_url_string() {
+        let tests = vec![
+            (
+                URL {
+                    scheme: "http".to_string(),
+                    host: "www.google.com".to_string(),
+                    path: "search".to_string(),
+                    ..URL::default()
+                },
+                "http://www.google.com/search".to_string(),
+            ),
+            (
+                URL {
+                    path: "this:that".to_string(),
+                    ..URL::default()
+                },
+                "./this:that".to_string(),
+            ),
+            (
+                URL {
+                    path: "here/this:that".to_string(),
+                    ..URL::default()
+                },
+                "here/this:that".to_string(),
+            ),
+            (
+                URL {
+                    scheme: "http".to_string(),
+                    host: "www.google.com".to_string(),
+                    path: "this:that".to_string(),
+                    ..URL::default()
+                },
+                "http://www.google.com/this:that".to_string(),
+            ),
+        ];
+
+        for (url, want) in tests {
+            let got = url.to_string();
+            assert_eq!(got, want);
+        }
+    }
+
+    #[test]
+    fn test_url_redacted() {
+        use super::UserInfo;
+        let tests = vec![
+            (
+                URL {
+                    scheme: "http".to_string(),
+                    host: "host.tld".to_string(),
+                    path: "this:that".to_string(),
+                    user: Some(UserInfo {
+                        username: Some("user".to_string()),
+                        password: Some("password".to_string()),
+                        password_set: true,
+                    }),
+                    ..URL::default()
+                },
+                "http://user:xxxxx@host.tld/this:that".to_string(),
+            ),
+            (
+                URL {
+                    scheme: "http".to_string(),
+                    host: "host.tld".to_string(),
+                    path: "this:that".to_string(),
+                    user: Some(UserInfo {
+                        username: Some("user".to_string()),
+                        password: None,
+                        password_set: false,
+                    }),
+                    ..URL::default()
+                },
+                "http://user@host.tld/this:that".to_string(),
+            ),
+            (
+                URL {
+                    scheme: "http".to_string(),
+                    host: "host.tld".to_string(),
+                    path: "this:that".to_string(),
+                    user: Some(UserInfo {
+                        username: Some("".to_string()),
+                        password: Some("password".to_string()),
+                        password_set: true,
+                    }),
+                    ..URL::default()
+                },
+                "http://:xxxxx@host.tld/this:that".to_string(),
+            ),
+            (
+                URL {
+                    scheme: "http".to_string(),
+                    host: "host.tld".to_string(),
+                    path: "this:that".to_string(),
+                    ..URL::default()
+                },
+                "http://host.tld/this:that".to_string(),
+            ),
+            (URL { ..URL::default() }, "".to_string()),
+        ];
+
+        for (url, want) in tests {
+            assert_eq!(url.redacted(), want);
         }
     }
 }

@@ -144,7 +144,6 @@ fn unescape(s: &str, mode: Encoding) -> Result<Cow<'_, str>> {
                     if v.len() > 3 {
                         v = &v[..3];
                     }
-                    println!("parse error. 1. {:?}", v);
                     return Err(Error::Parse(unsafe {
                         String::from_utf8_unchecked(v.to_vec())
                     }));
@@ -153,7 +152,6 @@ fn unescape(s: &str, mode: Encoding) -> Result<Cow<'_, str>> {
                     && unhex(bytes[i + 1]) < 8
                     && (&bytes[i..i + 3]).ne(b"%25")
                 {
-                    println!("parse error. 2. {:?}", &bytes[i..i + 3]);
                     return Err(Error::Parse(unsafe {
                         String::from_utf8_unchecked((&bytes[i..i + 3]).to_vec())
                     }));
@@ -161,7 +159,6 @@ fn unescape(s: &str, mode: Encoding) -> Result<Cow<'_, str>> {
                 if mode == Encoding::Zone {
                     let v = unhex(bytes[i + 1]) << 4 | unhex(bytes[i + 2]);
                     if bytes[i..i + 3].ne(b"%25") && v != b' ' && should_escape(v, Encoding::Host) {
-                        println!("parse error. 3. {:?}", v);
                         return Err(Error::Parse(unsafe {
                             String::from_utf8_unchecked((&bytes[i..i + 3]).to_vec())
                         }));
@@ -190,9 +187,6 @@ fn unescape(s: &str, mode: Encoding) -> Result<Cow<'_, str>> {
     if n == 0 && !has_plus {
         return Ok(Cow::Borrowed(s));
     }
-    println!("s: {:?}", s);
-    println!("n: {:?}", n);
-    println!("mode: {:?}", mode);
     Ok(Cow::Owned(build_unescape(s, n, mode)?))
 }
 
@@ -209,7 +203,6 @@ fn build_unescape(input: &str, n: usize, mode: Encoding) -> Result<String> {
             '%' => {
                 let a = (unhex(bytes[i + 1]) as u8) << 4;
                 let b = (unhex(bytes[i + 2])) as u8;
-                println!("1. {}. write: {}", i, (a | b) as char as u32);
                 result.push(a | b);
                 i += 2;
             }
@@ -219,11 +212,9 @@ fn build_unescape(input: &str, n: usize, mode: Encoding) -> Result<String> {
                 } else {
                     '+'
                 };
-                println!("2. {}. write: {}", i, v as u32);
                 result.push(v as u8);
             }
             _ => {
-                println!("3. {}. write: {}", i, bytes[i] as u32);
                 result.push(bytes[i]);
             }
         }
@@ -281,7 +272,6 @@ fn escape(s: &str, mode: Encoding) -> Cow<'_, str> {
 mod tests {
     use super::*;
     use crate::{should_escape, Encoding};
-    use std::result;
 
     #[test]
     fn it_works() {
@@ -434,5 +424,51 @@ mod tests {
         println!("{}", string_世界);
         // assert_eq!(s, a);
         assert_eq!(string_世界.as_bytes(), output.as_bytes());
+    }
+
+    #[test]
+    fn test_query_escape() {
+        let tests = vec![
+            ("", ""),
+            ("abc", "abc"),
+            ("one two", "one+two"),
+            ("10%", "10%25"),
+            (
+                " ?&=#+%!<>#\"{}|\\^[]`☺\t:/@$'()*,;",
+                "+%3F%26%3D%23%2B%25%21%3C%3E%23%22%7B%7D%7C%5C%5E%5B%5D%60%E2%98%BA%09%3A%2F%40%24%27%28%29%2A%2C%3B",
+            ),
+        ];
+
+        for (input, output) in tests {
+            let actual = query_escape(input).to_string();
+            assert_eq!(output.to_string(), actual);
+
+            let roundtrip = query_unescape(&actual);
+            assert_eq!(roundtrip, Ok(Cow::Borrowed(input)));
+        }
+    }
+
+    #[test]
+    fn test_path_escape() {
+        let tests = vec![
+            ("", ""),
+            ("abc", "abc"),
+            ("abc+def", "abc+def"),
+            ("a/b", "a%2Fb"),
+            ("one two", "one%20two"),
+            ("10%", "10%25"),
+            (
+                " ?&=#+%!<>#\"{}|\\^[]`☺\t:/@$'()*,;",
+                "%20%3F&=%23+%25%21%3C%3E%23%22%7B%7D%7C%5C%5E%5B%5D%60%E2%98%BA%09:%2F@$%27%28%29%2A%2C%3B",
+            ),
+        ];
+
+        for (input, output) in tests {
+            let actual = path_escape(input).to_string();
+            assert_eq!(output.to_string(), actual);
+
+            let roundtrip = path_unescape(&actual);
+            assert_eq!(roundtrip, Ok(Cow::Borrowed(input)));
+        }
     }
 }
