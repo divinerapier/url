@@ -2,7 +2,7 @@ use std::{borrow::Cow, collections::HashMap, convert::TryFrom, iter::FromIterato
 
 use crate::{errors::Error, query_unescape, Result};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Values<'a> {
     inner: HashMap<Cow<'a, str>, Vec<Cow<'a, str>>>,
 }
